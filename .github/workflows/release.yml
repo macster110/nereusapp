@@ -60,7 +60,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -n "${!v}" ]; then echo "$v=${!v}" >> "$GITHUB_ENV"; else echo "$v not set"; fi
+            if [ -n "${!v}" ]; then
+              # Heredoc form, so a line-wrapped base64 certificate survives.
+              printf '%s<<EOF_%s\n%s\nEOF_%s\n' "$v" "$v" "${!v}" "$v" >> "$GITHUB_ENV"
+            else
+              echo "$v not set"
+            fi
           done
       - uses: tauri-apps/tauri-action@v0
         env:
