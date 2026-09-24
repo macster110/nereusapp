@@ -1,7 +1,7 @@
 # Nereus
 
 A desktop app for exploring passive acoustic monitoring data in a
-[Nereus](../Nereus) database. It runs on Windows, macOS and Linux.
+[Nereus](https://github.com/macster110/Nereus) database. It runs on Windows, macOS and Linux.
 
 * **Globe.** Every deployment is drawn on a 3D globe: moorings as points,
   drifters, gliders and towed arrays as tracks. Points are coloured by
@@ -123,3 +123,10 @@ cargo run --release --example dump -- data postgresql://user@host/db OUT 5
 * Remembering passwords (in the OS keychain).
 * Code signing for the macOS and Windows installers.
 * Whistle contours in the MATLAB and R exports. They are in the Tethys XML.
+
+## Licence
+
+Nereus is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).

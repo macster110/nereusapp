@@ -3,6 +3,7 @@ name = "nereus-core"
 description = "Database access and export formats (MATLAB, R, Tethys XML) for Nereus"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }

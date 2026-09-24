@@ -3,6 +3,7 @@ name = "nereus-app"
 description = "Nereus: explore and download passive acoustic monitoring data"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lib]
 name = "nereus_app_lib"
