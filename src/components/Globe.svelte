@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import Globe, { type GlobeInstance } from "globe.gl";
   import { app, type Area } from "../lib/state.svelte";
   import type { Deployment, Track } from "../lib/api";
   import * as fmt from "../lib/format";
   import ClusterPicker from "./ClusterPicker.svelte";
+  import { settings } from "../lib/settings.svelte";
 
   let el: HTMLDivElement;
   let globe: GlobeInstance | undefined = $state();
@@ -350,16 +351,20 @@
       .pathsData(visibleTracks);
   });
 
-  // Selection: pulse, and fly there if it's off to the side.
+  // Selection: pulse (if turned on in Settings).
   $effect(() => {
     if (!globe) return;
     const d = app.selected;
-    if (!d || d.lat == null || d.lon == null) {
-      globe.ringsData([]);
-      return;
-    }
-    globe.ringLat(() => d.lat!).ringLng(() => d.lon!).ringsData([{}]);
-    const pov = globe.pointOfView();
+    const pulse = settings.pulseSelection && d != null && d.lat != null && d.lon != null;
+    globe.ringLat("lat").ringLng("lng").ringsData(pulse ? [{ lat: d!.lat, lng: d!.lon }] : []);
+  });
+
+  // Selection: fly there if it's off to the side.
+  $effect(() => {
+    if (!globe) return;
+    const d = app.selected;
+    if (!d || d.lat == null || d.lon == null) return;
+    const pov = untrack(() => globe!.pointOfView());
     globe.pointOfView({ lat: d.lat, lng: d.lon, altitude: Math.min(pov.altitude, 1.4) }, 900);
   });
 

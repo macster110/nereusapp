@@ -5,6 +5,7 @@
   import Timeline from "./components/Timeline.svelte";
   import ExportDialog from "./components/ExportDialog.svelte";
   import ConnectDialog from "./components/ConnectDialog.svelte";
+  import SettingsDialog from "./components/SettingsDialog.svelte";
   import { app, type Basemap, type ColorBy } from "./lib/state.svelte";
   import * as fmt from "./lib/format";
 
@@ -31,7 +32,8 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape" && !app.showExport && !app.showConnect && !app.drawingArea) app.selectedId = null;
+    if (e.key === "Escape" && !app.showExport && !app.showConnect && !app.showSettings && !app.drawingArea)
+      app.selectedId = null;
   }
 
   const BASEMAPS: { v: Basemap; label: string }[] = [
@@ -58,6 +60,12 @@
       </button>
       <button class="link" onclick={() => app.disconnect()}>Disconnect</button>
     {/if}
+    <button class="icon settings" title="Settings" aria-label="Settings" onclick={() => (app.showSettings = true)}>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+      </svg>
+    </button>
   </header>
 
   <div class="body">
@@ -118,6 +126,7 @@
 
   {#if app.showExport}<ExportDialog />{/if}
   {#if app.showConnect}<ConnectDialog />{/if}
+  {#if app.showSettings}<SettingsDialog />{/if}
 </div>
 
 <style>
@@ -133,6 +142,19 @@
     padding: 0 14px;
     background: var(--panel-solid);
     border-bottom: 1px solid var(--border);
+  }
+  .settings {
+    margin-left: auto;
+    border: 0;
+  }
+  .settings svg {
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .brand {
     display: flex;

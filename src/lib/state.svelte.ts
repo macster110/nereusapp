@@ -52,6 +52,7 @@ class Store {
 
   showConnect = $state(true);
   showExport = $state(false);
+  showSettings = $state(false);
   exportScope = $state<"selected" | "filtered">("filtered");
   timelineOpen = $state(true);
 
