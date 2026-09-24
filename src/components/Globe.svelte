@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import Globe, { type GlobeInstance } from "globe.gl";
+  import * as THREE from "three";
   import { app, type Area } from "../lib/state.svelte";
   import type { Deployment, Track } from "../lib/api";
   import * as fmt from "../lib/format";
@@ -57,10 +58,67 @@
     return app.tracks.filter((t) => ids.has(t.deployment));
   });
 
-  /** A colour at half opacity (points without detections). */
-  function fade(hex: string) {
-    const n = parseInt(hex.slice(1), 16);
-    return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, 0.45)`;
+  // ------------------------------------------------------------ markers
+  // Deployments are flat discs lying on the globe, each with a dark outline
+  // so overlapping ones stay distinct. Discs at the same height would
+  // "z-fight" (flicker between each other where they overlap), so each gets
+  // its own depth bias and draw order: the selected one on top, then those
+  // with detections, then the rest.
+  const DISC = new THREE.CircleGeometry(1, 40);
+  const EDGE = new THREE.RingGeometry(1, 1.2, 40);
+  const GLOBE_RADIUS = 100; // three-globe's units
+  interface Marker {
+    group: THREE.Group;
+    fill: THREE.MeshBasicMaterial;
+    edge: THREE.MeshBasicMaterial;
+  }
+  const markers = new Map<number, Marker>();
+
+  function markerOf(d: Deployment): THREE.Group {
+    let m = markers.get(d.id);
+    if (!m) {
+      const fill = new THREE.MeshBasicMaterial({ polygonOffset: true, polygonOffsetFactor: -1 });
+      const edge = new THREE.MeshBasicMaterial({
+        color: "#050912",
+        transparent: true,
+        opacity: 0.8,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+      });
+      const group = new THREE.Group();
+      group.add(new THREE.Mesh(DISC, fill), new THREE.Mesh(EDGE, edge));
+      m = { group, fill, edge };
+      markers.set(d.id, m);
+    }
+    return m.group;
+  }
+
+  /** Colour, size and depth order of every marker. */
+  function styleMarkers(list: Deployment[], sel: number | null, radiusDeg: number) {
+    const rank = [...list].sort(
+      (a, b) =>
+        Number(a.id === sel) - Number(b.id === sel) ||
+        Number(a.n_detections > 0) - Number(b.n_detections > 0) ||
+        a.id - b.id,
+    );
+    const size = ((radiusDeg * Math.PI) / 180) * GLOBE_RADIUS;
+    rank.forEach((d, i) => {
+      const m = markers.get(d.id) ?? (markerOf(d), markers.get(d.id)!);
+      const selected = d.id === sel;
+      const faded = !d.n_detections && !selected;
+      m.fill.color.set(selected ? "#ffffff" : app.colorOf(d));
+      m.fill.transparent = faded;
+      m.fill.opacity = faded ? 0.45 : 1;
+      m.fill.depthWrite = !faded;
+      // Later in the order = drawn on top and pulled further towards the camera.
+      for (const mat of [m.fill, m.edge]) {
+        mat.polygonOffsetUnits = -4 * (i + 1);
+        mat.needsUpdate = true;
+      }
+      m.group.renderOrder = i;
+      m.group.children.forEach((c) => (c.renderOrder = i));
+      m.group.scale.setScalar(size * (selected ? 1.5 : 1));
+    });
   }
 
   function esc(s: string) {
@@ -231,12 +289,13 @@
       .showAtmosphere(true)
       .atmosphereColor("#3fb6d8")
       .atmosphereAltitude(0.17)
-      .pointLat("lat")
-      .pointLng("lon")
-      .pointResolution(16)
-      .pointsTransitionDuration(0)
-      .pointLabel((d: object) => (cluster ? "" : tooltip(d as Deployment)))
-      .onPointClick((o: object) => {
+      .objectLat("lat")
+      .objectLng("lon")
+      .objectAltitude(0.000005) // ~30 m: lying on the surface; the depth bias keeps them in front
+      .objectFacesSurface(true)
+      .objectThreeObject((d: object) => markerOf(d as Deployment))
+      .objectLabel((d: object) => (cluster ? "" : tooltip(d as Deployment)))
+      .onObjectClick((o: object) => {
         if (app.drawingArea) return;
         const d = o as Deployment;
         const near = neighbours(d);
@@ -244,7 +303,7 @@
         else if (near.length > 1) openCluster(d, near);
         else app.selectedId = d.id;
       })
-      .onPointHover((d: object | null) => (el.style.cursor = d ? "pointer" : ""))
+      .onObjectHover((d: object | null) => (el.style.cursor = d ? "pointer" : ""))
       .pathPoints("points")
       .pathPointLat((p: [number, number]) => p[0])
       .pathPointLng((p: [number, number]) => p[1])
@@ -267,12 +326,17 @@
       .polygonStrokeColor(() => "#7ee0c3")
       .polygonAltitude(0.003);
     g.controls().zoomSpeed = 1.2;
+    // Stop about 10 km up: closer and the camera's near plane cuts off the markers
+    // (and there's nothing more to see; the picker separates anything closer).
+    g.controls().minDistance = GLOBE_RADIUS * 1.0015;
     g.onZoom((pov: { lat: number; lng: number; altitude: number }) => {
       // Only re-render the points when the size would visibly change.
       if (Math.abs(pov.altitude - altitude) / altitude > 0.08) altitude = pov.altitude;
       followSpot(pov);
     });
     globe = g;
+    // For poking at the scene from the dev tools; not in release builds.
+    if (import.meta.env.DEV) (window as unknown as { __globe: GlobeInstance }).__globe = g;
 
     const ro = new ResizeObserver(() => {
       g.width(el.clientWidth).height(el.clientHeight);
@@ -317,25 +381,16 @@
     closeCluster();
   });
 
-  // Points: redrawn when the filter, colours or selection change.
+  // Markers: redrawn when the filter, colours, selection or zoom change.
   $effect(() => {
     if (!globe) return;
     const sel = app.selectedId;
-    // Points keep a similar size on screen as you zoom.
+    // Markers keep a similar size on screen as you zoom.
     const radius = Math.min(1.2, Math.max(0.002, 0.36 * altitude));
-    // Columns stay short up close, or they look like pins lying across the view.
-    const height = radius * 0.005;
     app.colorBy;
     app.legend;
-    globe
-      .pointColor((o: object) => {
-        const d = o as Deployment;
-        const c = app.colorOf(d);
-        return d.id === sel ? "#ffffff" : d.n_detections ? c : fade(c);
-      })
-      .pointAltitude((o: object) => ((o as Deployment).id === sel ? 4 : 1) * height)
-      .pointRadius((o: object) => ((o as Deployment).id === sel ? 1.5 : 1) * radius)
-      .pointsData(visible);
+    styleMarkers(visible, sel, radius);
+    untrack(() => globe!.objectsData(visible));
   });
 
   $effect(() => {
