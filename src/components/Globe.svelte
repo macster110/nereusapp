@@ -4,6 +4,7 @@
   import { app, type Area } from "../lib/state.svelte";
   import type { Deployment, Track } from "../lib/api";
   import * as fmt from "../lib/format";
+  import ClusterPicker from "./ClusterPicker.svelte";
 
   let el: HTMLDivElement;
   let globe: GlobeInstance | undefined = $state();
@@ -14,6 +15,19 @@
   const TEXTURE = "/textures/earth-blue-marble.jpg";
   let darkTexture: Promise<string> | null = null;
   let altitude = $state(2.2);
+  let size = $state({ w: 800, h: 600 });
+
+  // Deployments too close to click one at a time: picked from a fan or list.
+  interface Cluster {
+    lat: number;
+    lng: number;
+    items: Deployment[];
+    offsets: { dx: number; dy: number }[];
+  }
+  let cluster = $state<Cluster | null>(null);
+  let spot = $state<{ x: number; y: number } | null>(null);
+  /** On-screen distance (px) under which points count as "on top of each other". */
+  const NEAR_PX = 18;
 
   /** The satellite image dimmed and desaturated, so coloured points stand out. */
   function darkened(): Promise<string> {
@@ -52,6 +66,83 @@
     return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
   }
 
+  function screen(lat: number, lng: number) {
+    return globe!.getScreenCoords(lat, lng, 0.01);
+  }
+
+  /** Angle in degrees between two positions on the sphere. */
+  function arc(lat1: number, lon1: number, lat2: number, lon2: number) {
+    const r = Math.PI / 180;
+    const c =
+      Math.sin(lat1 * r) * Math.sin(lat2 * r) + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.cos((lon1 - lon2) * r);
+    return Math.acos(Math.min(1, Math.max(-1, c))) / r;
+  }
+
+  /** Visible deployments drawn within NEAR_PX of `d` (d included). */
+  function neighbours(d: Deployment): Deployment[] {
+    if (!globe) return [d];
+    const c = screen(d.lat!, d.lon!);
+    return visible.filter((o) => {
+      if (o.id === d.id) return true;
+      // Nearby on screen but round the back of the globe doesn't count.
+      if (arc(o.lat!, o.lon!, d.lat!, d.lon!) > 20) return false;
+      const s = screen(o.lat!, o.lon!);
+      return Math.hypot(s.x - c.x, s.y - c.y) <= NEAR_PX;
+    });
+  }
+
+  /** More than fit in a fan, and spread out enough that zooming in separates them. */
+  function zoomFirst(d: Deployment, items: Deployment[]) {
+    return items.length > 12 && spreadDeg(d, items) > 0.05;
+  }
+
+  function spreadDeg(d: Deployment, items: Deployment[]) {
+    return Math.max(...items.map((o) => arc(o.lat!, o.lon!, d.lat!, d.lon!)));
+  }
+
+  /** Fly in close enough that the group spreads over part of the view. */
+  function zoomTo(d: Deployment, items: Deployment[]) {
+    let x = 0, y = 0, z = 0;
+    for (const o of items) {
+      const la = (o.lat! * Math.PI) / 180, lo = (o.lon! * Math.PI) / 180;
+      x += Math.cos(la) * Math.cos(lo);
+      y += Math.cos(la) * Math.sin(lo);
+      z += Math.sin(la);
+    }
+    const lat = (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI;
+    const lng = (Math.atan2(y, x) * 180) / Math.PI;
+    // Near the surface the view is about 27° x altitude across (half-height).
+    const alt = Math.min(Math.max(spreadDeg(d, items) / 10, 0.02), globe!.pointOfView().altitude * 0.6);
+    globe!.pointOfView({ lat, lng, altitude: alt }, 1000);
+  }
+
+  function openCluster(d: Deployment, items: Deployment[]) {
+    const c = screen(d.lat!, d.lon!);
+    cluster = {
+      lat: d.lat!,
+      lng: d.lon!,
+      items,
+      offsets: items.map((o) => {
+        const s = screen(o.lat!, o.lon!);
+        return { dx: s.x - c.x, dy: s.y - c.y };
+      }),
+    };
+    spot = c;
+  }
+
+  function closeCluster() {
+    cluster = null;
+    spot = null;
+  }
+
+  /** Keep the picker on its spot as the globe turns; close it once the spot goes out of sight. */
+  function followSpot(pov: { lat: number; lng: number; altitude: number }) {
+    if (!cluster || !globe) return;
+    const horizon = (Math.acos(1 / (1 + pov.altitude)) * 180) / Math.PI;
+    if (arc(cluster.lat, cluster.lng, pov.lat, pov.lng) > horizon - 3) closeCluster();
+    else spot = screen(cluster.lat, cluster.lng);
+  }
+
   function tooltip(d: Deployment) {
     const where = [d.project, d.site, d.region].filter(Boolean).map((s) => esc(s!)).join(" · ");
     const dets = d.n_detections
@@ -61,7 +152,15 @@
       <div>${where}</div>
       <div class="muted">${fmt.date(d.t_deploy)} – ${fmt.date(d.t_recover)}</div>
       <div>${esc(d.instrument_type ?? "Unknown instrument")} · ${esc(d.platform)}</div>
-      <div>${dets}</div></div>`;
+      <div>${dets}</div>${more(d)}</div>`;
+  }
+
+  function more(d: Deployment) {
+    const near = neighbours(d);
+    const n = near.length - 1;
+    if (n === 0) return "";
+    const action = zoomFirst(d, near) ? "click to zoom in" : "click to choose";
+    return `<div class="tip-more">+${n} more here · ${action}</div>`;
   }
 
   /** Rectangle as a GeoJSON polygon, edges densified so they follow the globe. */
@@ -135,9 +234,14 @@
       .pointLng("lon")
       .pointResolution(16)
       .pointsTransitionDuration(0)
-      .pointLabel((d: object) => tooltip(d as Deployment))
-      .onPointClick((d: object) => {
-        if (!app.drawingArea) app.selectedId = (d as Deployment).id;
+      .pointLabel((d: object) => (cluster ? "" : tooltip(d as Deployment)))
+      .onPointClick((o: object) => {
+        if (app.drawingArea) return;
+        const d = o as Deployment;
+        const near = neighbours(d);
+        if (near.length > 1 && zoomFirst(d, near)) zoomTo(d, near);
+        else if (near.length > 1) openCluster(d, near);
+        else app.selectedId = d.id;
       })
       .onPointHover((d: object | null) => (el.style.cursor = d ? "pointer" : ""))
       .pathPoints("points")
@@ -162,13 +266,18 @@
       .polygonStrokeColor(() => "#7ee0c3")
       .polygonAltitude(0.003);
     g.controls().zoomSpeed = 1.2;
-    g.onZoom((pov: { altitude: number }) => {
+    g.onZoom((pov: { lat: number; lng: number; altitude: number }) => {
       // Only re-render the points when the size would visibly change.
       if (Math.abs(pov.altitude - altitude) / altitude > 0.08) altitude = pov.altitude;
+      followSpot(pov);
     });
     globe = g;
 
-    const ro = new ResizeObserver(() => g.width(el.clientWidth).height(el.clientHeight));
+    const ro = new ResizeObserver(() => {
+      g.width(el.clientWidth).height(el.clientHeight);
+      size = { w: el.clientWidth, h: el.clientHeight };
+      if (cluster) spot = screen(cluster.lat, cluster.lng);
+    });
     ro.observe(el);
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape" && app.drawingArea) stopDrawing();
@@ -201,12 +310,20 @@
     };
   });
 
+  // The data behind an open picker changed: close it.
+  $effect(() => {
+    visible;
+    closeCluster();
+  });
+
   // Points: redrawn when the filter, colours or selection change.
   $effect(() => {
     if (!globe) return;
     const sel = app.selectedId;
     // Points keep a similar size on screen as you zoom.
-    const radius = Math.min(1.2, Math.max(0.05, 0.36 * altitude));
+    const radius = Math.min(1.2, Math.max(0.002, 0.36 * altitude));
+    // Columns stay short up close, or they look like pins lying across the view.
+    const height = radius * 0.005;
     app.colorBy;
     app.legend;
     globe
@@ -215,7 +332,7 @@
         const c = app.colorOf(d);
         return d.id === sel ? "#ffffff" : d.n_detections ? c : fade(c);
       })
-      .pointAltitude((o: object) => ((o as Deployment).id === sel ? 0.05 : 0.01))
+      .pointAltitude((o: object) => ((o as Deployment).id === sel ? 4 : 1) * height)
       .pointRadius((o: object) => ((o as Deployment).id === sel ? 1.5 : 1) * radius)
       .pointsData(visible);
   });
@@ -291,11 +408,26 @@
   });
 </script>
 
-<div class="globe" class:drawing={app.drawingArea} bind:this={el}></div>
+<div class="globe" class:drawing={app.drawingArea} class:picking={cluster != null} bind:this={el}></div>
 {#if app.drawingArea}
   <div class="hint">
     {firstCorner ? "Click the opposite corner" : "Click one corner of the area"} · Esc to cancel
   </div>
+{/if}
+{#if cluster && spot}
+  <ClusterPicker
+    x={spot.x}
+    y={spot.y}
+    width={size.w}
+    height={size.h}
+    items={cluster.items}
+    offsets={cluster.offsets}
+    onpick={(id) => {
+      app.selectedId = id;
+      closeCluster();
+    }}
+    onclose={closeCluster}
+  />
 {/if}
 {#if app.basemap === "ocean"}
   <div class="attribution">Basemap: Esri, GEBCO, NOAA, National Geographic, Garmin, HERE and others</div>
@@ -306,6 +438,10 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
+  }
+  /* The hover tooltip would sit on top of the picker (globe.gl sets display inline). */
+  .globe.picking :global(.float-tooltip-kap) {
+    display: none !important;
   }
   .globe.drawing {
     cursor: crosshair !important;
@@ -345,6 +481,11 @@
   :global(.tip-title) {
     font-weight: 650;
     margin-bottom: 2px;
+  }
+  :global(.tip-more) {
+    margin-top: 4px;
+    color: var(--accent-2);
+    font-weight: 550;
   }
   :global(.tip .muted) {
     color: var(--text-3);
