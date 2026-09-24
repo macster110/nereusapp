@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import Globe, { type GlobeInstance } from "globe.gl";
   import * as THREE from "three";
+  import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
   import { app, type Area } from "../lib/state.svelte";
   import type { Deployment, Track } from "../lib/api";
   import * as fmt from "../lib/format";
@@ -57,6 +58,25 @@
     const ids = new Set(app.filtered.map((d) => d.id));
     return app.tracks.filter((t) => ids.has(t.deployment));
   });
+
+  // ------------------------------------------------------------ tracks
+  // Tracks are thin "fat lines" (Line2), which three.js only hits within half
+  // their drawn width: under a pixel. It has a tolerance for them
+  // (raycaster.params.Line2.threshold, in pixels) that globe.gl doesn't set,
+  // so set it here for every raycast against one.
+  const TRACK_HIT_PX = 12;
+  const proto = LineSegments2.prototype as LineSegments2 & { nereusHitArea?: boolean };
+  if (!proto.nereusHitArea) {
+    const raycastLine = proto.raycast;
+    proto.raycast = function (raycaster, intersects) {
+      (raycaster.params as { Line2?: { threshold: number } }).Line2 = { threshold: TRACK_HIT_PX };
+      raycastLine.call(this, raycaster, intersects);
+    };
+    proto.nereusHitArea = true;
+  }
+
+  /** Deployment whose track is under the pointer (highlighted). */
+  let hoveredTrack = $state<number | null>(null);
 
   // ------------------------------------------------------------ markers
   // Deployments are flat discs lying on the globe, each with a dark outline
@@ -307,16 +327,19 @@
       .pathPoints("points")
       .pathPointLat((p: [number, number]) => p[0])
       .pathPointLng((p: [number, number]) => p[1])
-      .pathPointAlt(0.004)
+      .pathPointAlt(0.0005) // ~3 km: just clear of the surface
       .pathTransitionDuration(0)
       .pathLabel((t: object) => {
         const d = app.byId.get((t as Track).deployment);
-        return d ? tooltip(d) : "";
+        return d && !cluster ? tooltip(d) : "";
       })
       .onPathClick((t: object) => {
         if (!app.drawingArea) app.selectedId = (t as Track).deployment;
       })
-      .onPathHover((t: object | null) => (el.style.cursor = t ? "pointer" : ""))
+      .onPathHover((t: object | null) => {
+        el.style.cursor = t ? "pointer" : "";
+        hoveredTrack = t ? (t as Track).deployment : null;
+      })
       .ringColor(() => (t: number) => `rgba(255,255,255,${1 - t})`)
       .ringMaxRadius(2.5)
       .ringPropagationSpeed(1.6)
@@ -396,13 +419,19 @@
   $effect(() => {
     if (!globe) return;
     const sel = app.selectedId;
+    const hover = hoveredTrack;
     app.legend;
     globe
       .pathColor((t: object) => {
-        const d = app.byId.get((t as Track).deployment);
-        return (t as Track).deployment === sel ? "#ffffff" : d ? app.colorOf(d) : "#8a94a6";
+        const id = (t as Track).deployment;
+        const d = app.byId.get(id);
+        if (id === sel || id === hover) return "#ffffff";
+        return d ? app.colorOf(d) : "#8a94a6";
       })
-      .pathStroke((t: object) => ((t as Track).deployment === sel ? 2.5 : 1.2))
+      .pathStroke((t: object) => {
+        const id = (t as Track).deployment;
+        return id === sel ? 2.5 : id === hover ? 3 : 1.2;
+      })
       .pathsData(visibleTracks);
   });
 
